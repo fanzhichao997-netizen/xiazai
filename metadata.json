@@ -1,0 +1,5 @@
+{
+  "name": "Social Media Video Extractor",
+  "description": "Download videos from YouTube, TikTok, Instagram, and Facebook for data analysis.",
+  "requestFramePermissions": []
+}
