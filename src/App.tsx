@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Youtube, Instagram, Facebook, Video, History, Loader2, AlertCircle, CheckCircle2, Trash2, ExternalLink, ListPlus, Info } from 'lucide-react';
+import { Download, Youtube, Instagram, Facebook, Video, History, Loader2, AlertCircle, CheckCircle2, Trash2, ExternalLink, ListPlus, Info, FileSpreadsheet } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from './lib/utils';
 
@@ -11,12 +11,15 @@ interface ExtractionResult {
   platform: Platform;
   timestamp: number;
   originalUrl: string;
+  isAudio?: boolean;
 }
 
 export default function App() {
   const [urlsText, setUrlsText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [audioOnly, setAudioOnly] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [downloadProgress, setDownloadProgress] = useState({ active: false, current: 0, total: 0 });
   const [results, setResults] = useState<ExtractionResult[]>([]);
   const [errors, setErrors] = useState<{url: string, error: string}[]>([]);
   const [history, setHistory] = useState<ExtractionResult[]>([]);
@@ -61,7 +64,7 @@ export default function App() {
     if (urls.length === 0) return;
     
     if (urls.length > 30) {
-      setErrors([{ url: 'System', error: 'Maximum 30 URLs allowed at once.' }]);
+      setErrors([{ url: '系统', error: '一次最多允许 30 个链接。' }]);
       return;
     }
 
@@ -81,29 +84,30 @@ export default function App() {
         const res = await fetch('/api/extract', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
+          body: JSON.stringify({ url, audioOnly })
         });
 
         const data = await res.json();
 
         if (!res.ok || !data.success) {
-          throw new Error(data.error || 'Failed to extract video');
+          throw new Error(data.error || '提取视频失败');
         }
 
         // Add sequence number to the title
-        const titleWithSeq = `${i + 1}_${data.data.title || 'Extracted Video'}`;
+        const titleWithSeq = `${i + 1}_${data.data.title || '提取的视频'}`;
 
         const newResult: ExtractionResult = {
           url: data.data.url,
           title: titleWithSeq,
           platform: platform,
           timestamp: Date.now(),
-          originalUrl: url
+          originalUrl: url,
+          isAudio: data.data.isAudio
         };
 
         newResults.push(newResult);
       } catch (err: any) {
-        newErrors.push({ url, error: err.message || 'An unexpected error occurred' });
+        newErrors.push({ url, error: err.message || '发生未知错误' });
       } finally {
         setProgress({ current: i + 1, total: urls.length });
         setResults([...newResults]);
@@ -118,7 +122,7 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleDownload = async (videoUrl: string, title: string) => {
+  const handleDownload = async (videoUrl: string, title: string, isAudio: boolean = false) => {
     // Replace invalid characters for filenames (Windows/Mac/Linux safe)
     let safeTitle = title.replace(/[\n\r]+/g, ' ').replace(/[/\\?%*:|"<>]/g, '-').trim() || 'video';
     
@@ -129,10 +133,11 @@ export default function App() {
       chars.pop();
     }
     let currentTitle = chars.join('').trim();
-    const defaultFilename = currentTitle.endsWith('.mp4') ? currentTitle : `${currentTitle}.mp4`;
+    const ext = isAudio ? '.mp3' : '.mp4';
+    const defaultFilename = currentTitle.endsWith(ext) ? currentTitle : `${currentTitle}${ext}`;
     
     try {
-      const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(currentTitle)}`;
+      const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(defaultFilename)}`;
       const a = document.createElement('a');
       a.href = downloadUrl;
       a.download = defaultFilename;
@@ -141,17 +146,56 @@ export default function App() {
       document.body.removeChild(a);
     } catch (err: any) {
       console.error('Download failed:', err);
-      alert('Download failed. Please try again.');
+      alert('下载失败，请重试。');
     }
   };
 
   const handleDownloadAll = async () => {
+    setDownloadProgress({ active: true, current: 0, total: results.length });
     for (let i = 0; i < results.length; i++) {
+      setDownloadProgress(prev => ({ ...prev, current: i + 1 }));
       const result = results[i];
-      await handleDownload(result.url, result.title);
+      await handleDownload(result.url, result.title, result.isAudio);
       // Small delay between downloads
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    setTimeout(() => {
+      setDownloadProgress({ active: false, current: 0, total: 0 });
+    }, 1000);
+  };
+
+  const handleExportCSV = () => {
+    if (results.length === 0) return;
+    
+    // Create CSV content
+    const headers = ['平台', '标题', '原始链接', '下载链接', '提取时间'];
+    const csvRows = [headers.join(',')];
+    
+    results.forEach(result => {
+      const date = new Date(result.timestamp).toLocaleString();
+      // Escape quotes and wrap in quotes to handle commas in titles
+      const safeTitle = `"${result.title.replace(/"/g, '""')}"`;
+      const row = [
+        result.platform,
+        safeTitle,
+        result.originalUrl,
+        result.url,
+        `"${date}"`
+      ];
+      csvRows.push(row.join(','));
+    });
+    
+    const csvString = csvRows.join('\n');
+    const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' }); // \uFEFF for Excel UTF-8 BOM
+    
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `SMVE_Export_${new Date().getTime()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const PlatformIcon = ({ platform, className }: { platform: Platform; className?: string }) => {
@@ -176,7 +220,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="font-semibold text-sm tracking-tight">SMVE</h1>
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Data Analyst Tool</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">数据分析工具</p>
             </div>
           </div>
         </div>
@@ -190,7 +234,7 @@ export default function App() {
             )}
           >
             <ListPlus size={18} />
-            Batch Extractor
+            批量提取
           </button>
           <button
             onClick={() => setActiveTab('history')}
@@ -200,13 +244,13 @@ export default function App() {
             )}
           >
             <History size={18} />
-            History
+            历史记录
           </button>
         </nav>
 
         <div className="p-4 border-t border-gray-100">
           <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wider">Supported</h3>
+            <h3 className="text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wider">支持的平台</h3>
             <div className="flex gap-2 text-gray-400">
               <Youtube size={16} />
               <Instagram size={16} />
@@ -249,15 +293,15 @@ export default function App() {
                 className="space-y-8"
               >
                 <div>
-                  <h2 className="text-3xl font-light tracking-tight text-gray-900 mb-2">Batch Extract Videos</h2>
-                  <p className="text-gray-500 text-sm">Paste up to 30 links from YouTube, TikTok, Instagram, or Facebook (one per line) to download them all at once.</p>
+                  <h2 className="text-3xl font-light tracking-tight text-gray-900 mb-2">批量提取视频</h2>
+                  <p className="text-gray-500 text-sm">粘贴最多 30 个来自 YouTube、TikTok、Instagram 或 Facebook 的链接（每行一个），一键批量下载。</p>
                 </div>
 
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 md:p-8">
                   <form onSubmit={handleExtract} className="space-y-4">
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <label htmlFor="urls" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">Video URLs</label>
+                        <label htmlFor="urls" className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">视频链接</label>
                         <span className="text-xs text-gray-500">{urlsText.split(/[\r\n]+/).filter(u => u.trim()).length} / 30</span>
                       </div>
                       <div className="relative">
@@ -266,10 +310,33 @@ export default function App() {
                           value={urlsText}
                           onChange={(e) => setUrlsText(e.target.value)}
                           placeholder="https://www.youtube.com/watch?v=...&#10;https://www.tiktok.com/@user/video/...&#10;https://www.instagram.com/p/..."
-                          className="w-full pl-4 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-gray-900 min-h-[160px] resize-y font-mono text-sm"
+                          className="w-full pl-4 pr-10 py-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-gray-900 min-h-[160px] resize-y font-mono text-sm"
                           required
                         />
+                        {urlsText && (
+                          <button
+                            type="button"
+                            onClick={() => setUrlsText('')}
+                            className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 p-1"
+                            title="清空全部"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
                       </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 mb-4">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={audioOnly}
+                          onChange={(e) => setAudioOnly(e.target.checked)}
+                          className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                        />
+                        <span className="font-medium">仅提取音频 (MP3)</span>
+                        <span className="text-xs text-gray-500">- 提取背景音乐或音频轨道</span>
+                      </label>
                     </div>
                     
                     <button
@@ -280,12 +347,12 @@ export default function App() {
                       {loading ? (
                         <>
                           <Loader2 size={20} className="animate-spin" />
-                          Extracting ({progress.current}/{progress.total})...
+                          正在提取 ({progress.current}/{progress.total})...
                         </>
                       ) : (
                         <>
                           <ListPlus size={20} />
-                          Extract Videos
+                          提取视频
                         </>
                       )}
                     </button>
@@ -302,7 +369,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2 font-medium">
                           <AlertCircle size={18} className="shrink-0" />
-                          <span>{errors.length} error(s) occurred:</span>
+                          <span>出现 {errors.length} 个错误：</span>
                         </div>
                         <ul className="list-disc pl-6 space-y-1">
                           {errors.map((err, idx) => (
@@ -325,23 +392,41 @@ export default function App() {
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-2">
                             <CheckCircle2 size={20} className="text-emerald-500" />
-                            <h3 className="font-medium text-gray-900">Successfully Extracted ({results.length})</h3>
+                            <h3 className="font-medium text-gray-900">成功提取 ({results.length})</h3>
                           </div>
                           
                           <div className="flex gap-2">
                             <button
                               type="button"
-                              onClick={handleDownloadAll}
-                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                              onClick={handleExportCSV}
+                              className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                             >
-                              <Download size={16} />
-                              Download All
+                              <FileSpreadsheet size={16} />
+                              导出 CSV
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAll}
+                              disabled={downloadProgress.active}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                            >
+                              {downloadProgress.active ? (
+                                <>
+                                  <Loader2 size={16} className="animate-spin" />
+                                  正在下载 ({downloadProgress.current}/{downloadProgress.total})
+                                </>
+                              ) : (
+                                <>
+                                  <Download size={16} />
+                                  全部下载
+                                </>
+                              )}
                             </button>
                           </div>
                         </div>
                         
                         <p className="text-xs text-gray-500 mb-4 flex items-center gap-1">
-                          <Info size={14} /> Your browser will handle the download. Depending on your settings, it may ask where to save each file.
+                          <Info size={14} /> 您的浏览器将处理下载。根据您的设置，可能会询问每个文件的保存位置。
                         </p>
                         
                         <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
@@ -360,7 +445,7 @@ export default function App() {
                                 className="w-full sm:w-auto px-4 py-2 bg-gray-900 hover:bg-gray-800 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2 shrink-0"
                               >
                                 <Download size={16} />
-                                Download
+                                下载
                               </button>
                             </div>
                           ))}
@@ -381,8 +466,8 @@ export default function App() {
               >
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="text-3xl font-light tracking-tight text-gray-900 mb-2">History</h2>
-                    <p className="text-gray-500 text-sm">Previously extracted videos for analysis.</p>
+                    <h2 className="text-3xl font-light tracking-tight text-gray-900 mb-2">历史记录</h2>
+                    <p className="text-gray-500 text-sm">之前提取的视频，用于分析。</p>
                   </div>
                   <div className="flex gap-2">
                     {history.length > 0 && (
@@ -391,7 +476,7 @@ export default function App() {
                         className="text-sm text-red-600 hover:text-red-700 flex items-center gap-1 px-3 py-1.5 rounded-md hover:bg-red-50 transition-colors"
                       >
                         <Trash2 size={16} />
-                        Clear
+                        清空
                       </button>
                     )}
                   </div>
@@ -400,8 +485,8 @@ export default function App() {
                 {history.length === 0 ? (
                   <div className="bg-white rounded-2xl border border-gray-200 border-dashed p-12 text-center">
                     <History size={48} className="mx-auto text-gray-300 mb-4" />
-                    <h3 className="text-gray-900 font-medium mb-1">No history yet</h3>
-                    <p className="text-gray-500 text-sm">Extracted videos will appear here.</p>
+                    <h3 className="text-gray-900 font-medium mb-1">暂无历史记录</h3>
+                    <p className="text-gray-500 text-sm">提取的视频将显示在这里。</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -423,7 +508,7 @@ export default function App() {
                           className="w-full sm:w-auto px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-900 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2 shrink-0"
                         >
                           <Download size={16} />
-                          Download
+                          下载
                         </button>
                       </div>
                     ))}

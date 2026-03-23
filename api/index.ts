@@ -3,6 +3,7 @@ import axios from 'axios';
 import youtubedl from 'youtube-dl-exec';
 import * as snapsave from 'snapsave-media-downloader';
 import { igdl, ttdl, fbdown, twitter, youtube } from 'btch-downloader';
+import ffmpeg from 'fluent-ffmpeg';
 
 const app = express();
 
@@ -18,9 +19,9 @@ function detectPlatform(url: string) {
 }
 
 app.post('/api/extract', async (req, res) => {
-  let { url } = req.body;
+  let { url, audioOnly } = req.body;
   if (!url) {
-    return res.status(400).json({ success: false, error: 'URL is required' });
+    return res.status(400).json({ success: false, error: '需要提供链接' });
   }
 
   // Ensure URL has protocol
@@ -33,7 +34,7 @@ app.post('/api/extract', async (req, res) => {
   try {
     let downloadUrl = '';
     let title = '';
-    let errorMessage = 'Extraction failed';
+    let errorMessage = '提取失败';
 
     // Helper to generate a fallback title based on URL
     const getFallbackTitle = () => {
@@ -194,8 +195,14 @@ app.post('/api/extract', async (req, res) => {
       try {
         const ttRes = await axios.post('https://www.tikwm.com/api/', { url }, { validateStatus: () => true });
         if (ttRes.data?.data) {
-          // Prefer hdplay over play for better quality
-          const videoUrl = ttRes.data.data.hdplay || ttRes.data.data.play;
+          // If audioOnly, try to get music, else prefer hdplay over play
+          let videoUrl = '';
+          if (audioOnly && ttRes.data.data.music) {
+            videoUrl = ttRes.data.data.music;
+          } else {
+            videoUrl = ttRes.data.data.hdplay || ttRes.data.data.play;
+          }
+          
           if (videoUrl) {
             let username = 'unknown';
             let title = ttRes.data.data.title;
@@ -209,7 +216,8 @@ app.post('/api/extract', async (req, res) => {
               data: {
                 url: videoUrl,
                 title: formatTitle(title, 'tiktok', username, url),
-                platform: 'tiktok'
+                platform: 'tiktok',
+                isAudio: audioOnly && !!ttRes.data.data.music
               }
             });
           }
@@ -261,7 +269,8 @@ app.post('/api/extract', async (req, res) => {
               data: {
                 url: bestMedia.url,
                 title: formatTitle(realTitle, platform, username, url),
-                platform: platform
+                platform: platform,
+                isAudio: audioOnly
               }
             });
           }
@@ -289,12 +298,19 @@ app.post('/api/extract', async (req, res) => {
           if (platform === 'instagram' && btchRes.status && btchRes.result && btchRes.result.length > 0) {
             downloadUrl = btchRes.result[0].url;
           } else if (platform === 'tiktok' && btchRes.status && btchRes.video && btchRes.video.length > 0) {
-            downloadUrl = btchRes.video[0];
+            // If audioOnly, try to get audio from btchRes, else video
+            downloadUrl = audioOnly && btchRes.audio && btchRes.audio.length > 0 ? btchRes.audio[0] : btchRes.video[0];
             rawTitle = btchRes.title || '';
           } else if (platform === 'facebook' && btchRes.status && (btchRes.HD || btchRes.Normal_video)) {
             downloadUrl = btchRes.HD || btchRes.Normal_video;
-          } else if (platform === 'youtube' && btchRes.status && btchRes.mp4) {
-            downloadUrl = btchRes.mp4;
+          } else if (platform === 'youtube' && btchRes.status) {
+            if (audioOnly && btchRes.mp3) {
+              downloadUrl = btchRes.mp3;
+            } else if (!audioOnly && btchRes.mp4) {
+              downloadUrl = btchRes.mp4;
+            } else if (!audioOnly) {
+              downloadUrl = btchRes.mp4 || btchRes.mp3;
+            }
             rawTitle = btchRes.title || '';
           } else if (platform === 'twitter' && btchRes.status && btchRes.url && btchRes.url.length > 0) {
             // Get the highest quality video
@@ -316,7 +332,8 @@ app.post('/api/extract', async (req, res) => {
               data: {
                 url: downloadUrl,
                 title: formatTitle(rawTitle, platform, username, url),
-                platform: platform
+                platform: platform,
+                isAudio: audioOnly
               }
             });
           }
@@ -341,7 +358,8 @@ app.post('/api/extract', async (req, res) => {
                 data: {
                   url: downloadUrl,
                   title: formatTitle(meta.title, platform, meta.username, url),
-                  platform: platform
+                  platform: platform,
+                  isAudio: audioOnly
                 }
               });
             }
@@ -366,7 +384,8 @@ app.post('/api/extract', async (req, res) => {
                 data: {
                   url: downloadUrl,
                   title: formatTitle(meta.title, platform, meta.username, url),
-                  platform: platform
+                  platform: platform,
+                  isAudio: audioOnly
                 }
               });
             }
@@ -389,7 +408,8 @@ app.post('/api/extract', async (req, res) => {
                 data: {
                   url: downloadUrl,
                   title: formatTitle(meta.title, platform, meta.username, url),
-                  platform: platform
+                  platform: platform,
+                  isAudio: audioOnly
                 }
               });
             }
@@ -407,8 +427,14 @@ app.post('/api/extract', async (req, res) => {
         noWarnings: true,
         noCheckCertificates: true,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        format: 'best[ext=mp4]/best', // Ensure we get a single file with both video and audio
       };
+      
+      if (audioOnly) {
+        options.format = 'bestaudio/best';
+        options.extractAudio = true;
+      } else {
+        options.format = 'best[ext=mp4]/best'; // Ensure we get a single file with both video and audio
+      }
       
       if (platform === 'instagram') {
         options.referer = 'https://www.instagram.com/';
@@ -422,11 +448,24 @@ app.post('/api/extract', async (req, res) => {
         const rawTitle = output.description || output.title;
         const uploader = output.uploader || output.uploader_id || output.channel || 'unknown';
         title = formatTitle(rawTitle, platform, uploader, url);
-        downloadUrl = output.url || (output.requested_downloads && output.requested_downloads[0]?.url);
+        
+        if (audioOnly && output.formats) {
+          // Try to find an audio-only format
+          const audioFormats = output.formats.filter((f: any) => f.vcodec === 'none' && f.acodec !== 'none');
+          if (audioFormats.length > 0) {
+            // Sort by quality (usually higher abr or tbr is better)
+            audioFormats.sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
+            downloadUrl = audioFormats[0].url;
+          }
+        }
+        
+        if (!downloadUrl) {
+          downloadUrl = output.url || (output.requested_downloads && output.requested_downloads[0]?.url);
+        }
       }
     } catch (e: any) {
       console.log('yt-dlp error:', e.message);
-      errorMessage = 'Failed to extract video. The video might be private, unsupported, or requires login.';
+      errorMessage = '提取视频失败。视频可能是私密的、不支持的，或者需要登录。';
     }
 
     if (!downloadUrl) {
@@ -438,14 +477,15 @@ app.post('/api/extract', async (req, res) => {
       data: {
         url: downloadUrl,
         title: title || getFallbackTitle(), 
-        platform
+        platform,
+        isAudio: audioOnly
       }
     });
   } catch (error: any) {
     console.error('Extraction error:', error.message);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to extract video. The service might be rate-limited or the URL is unsupported.' 
+      error: '提取视频失败。服务可能受到速率限制，或者不支持该链接。' 
     });
   }
 });
@@ -455,7 +495,7 @@ app.get('/api/download', async (req, res) => {
   const videoUrl = req.query.url as string;
   const filename = req.query.filename as string || 'video.mp4';
   
-  if (!videoUrl) return res.status(400).send('URL required');
+  if (!videoUrl) return res.status(400).send('需要提供链接');
 
   try {
     const response = await axios({
@@ -477,7 +517,11 @@ app.get('/api/download', async (req, res) => {
     }
     safeFilename = chars.join('').trim() + ext;
     
-    const finalFilename = safeFilename.toLowerCase().endsWith('.mp4') ? safeFilename : `${safeFilename}.mp4`;
+    // Ensure it has an extension, default to mp4 if not specified and not an audio file
+    let finalFilename = safeFilename.toLowerCase();
+    if (!finalFilename.includes('.')) {
+      finalFilename = `${safeFilename}.mp4`;
+    }
     
     // Create a safe ASCII fallback name
     const asciiFilename = finalFilename.replace(/[^\x20-\x7E]/g, '_');
@@ -487,18 +531,37 @@ app.get('/api/download', async (req, res) => {
       .replace(/['()]/g, escape)
       .replace(/\*/g, '%2A');
     
-    res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
-    if (response.headers['content-length']) {
-      res.setHeader('Content-Length', response.headers['content-length']);
-    }
+    const contentType = response.headers['content-type'] || 'video/mp4';
+    const isVideo = contentType.includes('video') || contentType.includes('application/octet-stream') || contentType.includes('binary');
     
     // Standard header for forcing download with UTF-8 filename support
     res.setHeader('Content-Disposition', `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`);
     
-    response.data.pipe(res);
+    if (finalFilename.endsWith('.mp3') && isVideo) {
+      res.setHeader('Content-Type', 'audio/mpeg');
+      // We don't know the final length of the transcoded audio
+      res.removeHeader('Content-Length');
+      
+      ffmpeg(response.data)
+        .toFormat('mp3')
+        .audioBitrate(128)
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err.message);
+          if (!res.headersSent) {
+            res.status(500).send('音频提取失败');
+          }
+        })
+        .pipe(res, { end: true });
+    } else {
+      res.setHeader('Content-Type', contentType);
+      if (response.headers['content-length']) {
+        res.setHeader('Content-Length', response.headers['content-length']);
+      }
+      response.data.pipe(res);
+    }
   } catch (e) {
     console.error('Download proxy error:', e);
-    res.status(500).send('Download failed');
+    res.status(500).send('下载失败');
   }
 });
 
