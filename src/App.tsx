@@ -21,7 +21,6 @@ export default function App() {
   const [errors, setErrors] = useState<{url: string, error: string}[]>([]);
   const [history, setHistory] = useState<ExtractionResult[]>([]);
   const [activeTab, setActiveTab] = useState<'extract' | 'history'>('extract');
-  const [directoryHandle, setDirectoryHandle] = useState<any>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('smve_history');
@@ -119,26 +118,6 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleSelectFolder = async () => {
-    try {
-      if (window !== window.top) {
-        alert('Selecting a specific download folder is not supported in this preview window due to browser security restrictions. Please open the app in a new tab to use this feature, or continue to download files to your default downloads folder.');
-        return;
-      }
-      if ('showDirectoryPicker' in window) {
-        const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
-        setDirectoryHandle(handle);
-      } else {
-        alert('Your browser does not support folder selection. Files will be downloaded normally.');
-      }
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Failed to select folder:', err);
-        alert(`Failed to select folder: ${err.message || 'Unknown error'}. Your browser might block this feature in this environment.`);
-      }
-    }
-  };
-
   const handleDownload = async (videoUrl: string, title: string) => {
     // Replace invalid characters for filenames (Windows/Mac/Linux safe)
     let safeTitle = title.replace(/[\n\r]+/g, ' ').replace(/[/\\?%*:|"<>]/g, '-').trim() || 'video';
@@ -150,99 +129,19 @@ export default function App() {
       chars.pop();
     }
     let currentTitle = chars.join('').trim();
-    let success = false;
-    let attempt = 0;
-
-    while (!success && currentTitle.length > 0) {
-      const defaultFilename = currentTitle.endsWith('.mp4') ? currentTitle : `${currentTitle}.mp4`;
-      
-      try {
-        // If user has selected a folder, save directly to it
-        if (directoryHandle) {
-          try {
-            const fileHandle = await directoryHandle.getFileHandle(defaultFilename, { create: true });
-            const writable = await fileHandle.createWritable();
-            const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(currentTitle)}`;
-            const response = await fetch(downloadUrl);
-            
-            if (!response.ok) throw new Error('Network response was not ok');
-            if (!response.body) throw new Error('No response body');
-            
-            await response.body.pipeTo(writable);
-            return; // Success
-          } catch (err: any) {
-            // If it's a name length error or other validation error, truncate and retry
-            if (err.name === 'TypeError' || err.name === 'NotAllowedError' || err.message?.toLowerCase().includes('name') || err.message?.toLowerCase().includes('length')) {
-              let retryChars = Array.from(currentTitle);
-              if (retryChars.length > 20) {
-                retryChars.splice(-20);
-                currentTitle = retryChars.join('').trim();
-                attempt++;
-                if (attempt <= 10) continue; // Prevent infinite loop
-              }
-            }
-            console.error('Failed to save to selected folder:', err);
-            // Fall through to other methods if this fails for other reasons
-          }
-        }
-
-        // Try using the modern File System Access API if available (Chromium browsers)
-        if ('showSaveFilePicker' in window && window === window.top) {
-          try {
-            const handle = await (window as any).showSaveFilePicker({
-              suggestedName: defaultFilename,
-              types: [{
-                description: 'MP4 Video',
-                accept: { 'video/mp4': ['.mp4'] },
-              }],
-            });
-            
-            const writable = await handle.createWritable();
-            
-            // Fetch the video data through our proxy
-            const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(currentTitle)}`;
-            const response = await fetch(downloadUrl);
-            
-            if (!response.ok) throw new Error('Network response was not ok');
-            if (!response.body) throw new Error('No response body');
-            
-            // Stream the response directly to the file
-            await response.body.pipeTo(writable);
-            return; // Success
-          } catch (err: any) {
-            // User cancelled the picker
-            if (err.name === 'AbortError') return;
-            
-            // If it's a name length error or other validation error, truncate and retry
-            if (err.name === 'TypeError' || err.name === 'NotAllowedError' || err.message?.toLowerCase().includes('name') || err.message?.toLowerCase().includes('length')) {
-              let retryChars = Array.from(currentTitle);
-              if (retryChars.length > 20) {
-                retryChars.splice(-20);
-                currentTitle = retryChars.join('').trim();
-                attempt++;
-                if (attempt <= 10) continue; // Prevent infinite loop
-              }
-            }
-            console.error('File System Access API failed, falling back:', err);
-            // Fall through
-          }
-        }
-        
-        // Fallback for non-Chromium browsers or if API fails
-        const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(currentTitle)}`;
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = defaultFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        return; // Success
-        
-      } catch (err: any) {
-        console.error('Download failed:', err);
-        alert('Download failed. Please try again.');
-        return; // Exit on failure
-      }
+    const defaultFilename = currentTitle.endsWith('.mp4') ? currentTitle : `${currentTitle}.mp4`;
+    
+    try {
+      const downloadUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(currentTitle)}`;
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = defaultFilename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error('Download failed:', err);
+      alert('Download failed. Please try again.');
     }
   };
 
@@ -432,19 +331,6 @@ export default function App() {
                           <div className="flex gap-2">
                             <button
                               type="button"
-                              onClick={handleSelectFolder}
-                              className={cn(
-                                "px-4 py-2 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2",
-                                directoryHandle 
-                                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200" 
-                                  : "bg-white border border-gray-200 text-gray-700 hover:bg-gray-50"
-                              )}
-                            >
-                              <ListPlus size={16} />
-                              {directoryHandle ? 'Folder Selected' : 'Select Folder'}
-                            </button>
-                            <button
-                              type="button"
                               onClick={handleDownloadAll}
                               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                             >
@@ -455,7 +341,7 @@ export default function App() {
                         </div>
                         
                         <p className="text-xs text-gray-500 mb-4 flex items-center gap-1">
-                          <Info size={14} /> {directoryHandle ? 'Files will be saved directly to your selected folder.' : 'Clicking download will prompt you to choose a save folder. Select a folder first to download all automatically.'}
+                          <Info size={14} /> Your browser will handle the download. Depending on your settings, it may ask where to save each file.
                         </p>
                         
                         <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
@@ -499,18 +385,6 @@ export default function App() {
                     <p className="text-gray-500 text-sm">Previously extracted videos for analysis.</p>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      onClick={handleSelectFolder}
-                      className={cn(
-                        "text-sm font-medium flex items-center gap-1 px-3 py-1.5 rounded-md transition-colors",
-                        directoryHandle 
-                          ? "text-emerald-700 bg-emerald-50 hover:bg-emerald-100" 
-                          : "text-gray-600 hover:bg-gray-100"
-                      )}
-                    >
-                      <ListPlus size={16} />
-                      {directoryHandle ? 'Folder Selected' : 'Select Folder'}
-                    </button>
                     {history.length > 0 && (
                       <button
                         onClick={clearHistory}
