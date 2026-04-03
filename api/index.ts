@@ -542,16 +542,39 @@ app.get('/api/download', async (req, res) => {
       // We don't know the final length of the transcoded audio
       res.removeHeader('Content-Length');
       
-      ffmpeg(response.data)
+      // Destroy the axios stream since we will let FFmpeg fetch the URL directly.
+      // This is necessary because MP4 files often have the 'moov' atom at the end,
+      // and FFmpeg needs to be able to seek (via HTTP Range requests) to read it.
+      // Piping a non-seekable stream will cause FFmpeg to fail.
+      response.data.destroy();
+      
+      const command = ffmpeg(videoUrl)
+        .inputOptions([
+          '-reconnect 1',
+          '-reconnect_streamed 1',
+          '-reconnect_delay_max 5'
+        ])
         .toFormat('mp3')
+        .audioCodec('libmp3lame')
         .audioBitrate(128)
-        .on('error', (err) => {
+        .noVideo()
+        .on('error', (err, stdout, stderr) => {
+          if (res.destroyed || res.closed) {
+            console.log('Client disconnected, stopping FFmpeg');
+            return;
+          }
           console.error('FFmpeg error:', err.message);
+          console.error('FFmpeg stderr:', stderr);
           if (!res.headersSent) {
             res.status(500).send('音频提取失败');
           }
-        })
-        .pipe(res, { end: true });
+        });
+        
+      command.pipe(res, { end: true });
+      
+      res.on('close', () => {
+        command.kill('SIGKILL');
+      });
     } else {
       res.setHeader('Content-Type', contentType);
       if (response.headers['content-length']) {
